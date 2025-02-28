@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Example</title>
+    <style>
+        textarea {
+            width: 500px;
+            min-height: 75px;
+        }
+    </style>
+</head>
+<body>
+  Browser base64 Session Description<br />
+  <textarea id="localSessionDescription" readonly="true"></textarea> <br />
+  Remote Session Description<br />
+  <textarea id="remoteSessionDescription"></textarea> <br/>
+  <button onclick="window.startSession()"> Start Session </button><br />
+
+  <br />
+
+  Video<br />
+  <div id="remoteVideos"></div> <br />
+
+  Text<br />
+  <div id="text"></div>
+
+  Logs<br />
+  <div id="logs"></div>
+  <script>
+    function queryBroadcast(descr) {
+      fetch('/api/broadcast', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(descr)
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`)
+          }
+          return response.json()
+        })
+        .then(data => {
+          console.log("Received data:", data)
+          let descr = btoa(JSON.stringify(data))
+          document.getElementById('remoteSessionDescription').value = descr
+          try {
+            pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(descr))))
+          } catch (e) {
+            alert(e)
+          }
+        })
+        .catch(error => console.error("Fetch error:", error))
+    }
+
+    let pc = new RTCPeerConnection({
+      iceServers: [
+        {
+          urls: 'stun:global.stun.twilio.com:3478'
+        }
+      ]
+    })
+    // Use a channel on the client side somehow enables the channel created
+    // on the server side.
+    let channel = pc.createDataChannel("text")
+    var log = msg => {
+      console.log(msg)
+      document.getElementById('logs').innerHTML += msg + '<br>'
+    }
+
+    pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+    pc.onicecandidate = event => {
+      // Use the first ice candidate as otherwise there is a large timeout.
+      // Maybe we should gather a few candidates instead.
+      console.log("got ice candidate", event.candidate)
+      queryBroadcast(pc.localDescription)
+      let descr = btoa(JSON.stringify(pc.localDescription))
+      document.getElementById('localSessionDescription').value = descr
+      pc.onicecandidate = null
+    }
+    pc.ondatachannel = (event) => {
+      const dataChannel = event.channel
+      console.log("Data channel received:", dataChannel.label)
+      dataChannel.onmessage = (event) => {
+        console.log("Received message:", event.data)
+        document.getElementById('text').innerHTML += event.data
+      }
+      dataChannel.onopen = () => {
+        console.log("Data channel is open!")
+      }
+      dataChannel.onclose = () => {
+        console.log("Data channel is closed.")
+      }
+    }
+    pc.ontrack = function (event) {
+      var el = document.createElement(event.track.kind)
+      el.srcObject = event.streams[0]
+      el.autoplay = true
+      el.controls = true
+
+      document.getElementById('remoteVideos').appendChild(el)
+    }
+    // Add an empty audio track, otherwise the createOffer call never
+    // returns.
+    const audioContext = new AudioContext()
+    const destination = audioContext.createMediaStreamDestination()
+    const emptyAudioTrack = destination.stream.getAudioTracks()[0]
+    pc.addTrack(emptyAudioTrack, destination.stream)
+
+    window.startSession = () => {
+      console.log("creating offer")
+      pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
+    }
+
+    async function getLatencyStats(peerConnection) {
+      const stats = await peerConnection.getStats()
+      let latencyStats = {}
+      stats.forEach(report => {
+        if (report.type === "candidate-pair" && report.selected) {
+            latencyStats.rtt = report.currentRoundTripTime
+        }
+        if (report.type === "inbound-rtp" && report.kind === "audio") {
+            latencyStats.jitter = report.jitter
+            latencyStats.packetLoss = report.packetsLost
+        }
+      });
+      console.log("Latency Stats:", latencyStats)
+      return latencyStats
+    }
+    setInterval(() => {
+      getLatencyStats(pc)
+    }, 5000)
+
+  </script>
+</body>
+</html>
+
